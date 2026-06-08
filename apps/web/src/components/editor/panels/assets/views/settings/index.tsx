@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import {
 	Select,
@@ -31,8 +31,9 @@ import { dimensionToAspectRatio } from "@/utils/geometry";
 import { formatNumberForDisplay } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
+import { Input } from "@/components/ui/input";
 
-type SettingsView = "project-info" | "background";
+type SettingsView = "project-info" | "background" | "api-keys";
 
 const PRESET_LABELS: Record<string, string> = {
 	"1:1": "1:1",
@@ -97,6 +98,17 @@ function useCanvasDimensionDraft({
 
 export function SettingsView() {
 	const [view, setView] = useState<SettingsView>("project-info");
+	const [giphyKey, setGiphyKey] = useState("");
+
+	useEffect(() => {
+		setGiphyKey(localStorage.getItem("opencut_giphy_key") || "");
+	}, []);
+
+	const handleSaveGiphyKey = ({ value }: { value: string }) => {
+		setGiphyKey(value);
+		localStorage.setItem("opencut_giphy_key", value);
+	};
+
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 	const { canvasPresets } = useEditorStore();
@@ -216,6 +228,7 @@ export function SettingsView() {
 					<TabsList>
 						<TabsTrigger value="project-info">Project info</TabsTrigger>
 						<TabsTrigger value="background">Background</TabsTrigger>
+						<TabsTrigger value="api-keys">API Keys</TabsTrigger>
 					</TabsList>
 				</Tabs>
 			}
@@ -309,6 +322,26 @@ export function SettingsView() {
 				</div>
 			)}
 			{view === "background" && <BackgroundContent />}
+			{view === "api-keys" && (
+				<div className="flex flex-col p-4 gap-4">
+					<Section showTopBorder={false}>
+						<SectionHeader>
+							<SectionTitle>GIPHY API Key</SectionTitle>
+						</SectionHeader>
+						<SectionContent className="pt-2">
+							<Input
+								type="password"
+								placeholder="Using default public key"
+								value={giphyKey}
+								onChange={(e) => handleSaveGiphyKey({ value: e.target.value })}
+							/>
+							<p className="text-xs text-muted-foreground mt-1.5">
+								Leave empty to use the default keyless public GIPHY key.
+							</p>
+						</SectionContent>
+					</Section>
+				</div>
+			)}
 		</PanelView>
 	);
 }
