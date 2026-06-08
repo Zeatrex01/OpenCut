@@ -1,3 +1,5 @@
+import type { TextElement } from "@/timeline";
+import { mediaTimeToSeconds } from "@/wasm";
 import type { ParseSubtitleResult, SubtitleCue } from "./types";
 
 const TIMESTAMP_SEPARATOR = /\s*-->\s*/;
@@ -95,4 +97,55 @@ function parseSrtTimestamp({ input }: { input: string }): number {
 		parsedSeconds +
 		parsedMilliseconds / 1000
 	);
+}
+
+function formatTimeSRT({ seconds }: { seconds: number }): string {
+	if (Number.isNaN(seconds) || seconds < 0) {
+		return "00:00:00,000";
+	}
+
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const secs = Math.floor(seconds % 60);
+	const milliseconds = Math.floor((seconds % 1) * 1000);
+
+	const pad = (num: number, size: number) => {
+		let s = Math.floor(num).toString();
+		while (s.length < size) {
+			s = "0" + s;
+		}
+		return s;
+	};
+
+	return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)},${pad(milliseconds, 3)}`;
+}
+
+export function exportToSRT({ elements }: { elements: TextElement[] }): string {
+	const sortedElements = [...elements].sort((a, b) => {
+		const startA = mediaTimeToSeconds({ time: a.startTime });
+		const startB = mediaTimeToSeconds({ time: b.startTime });
+		return startA - startB;
+	});
+
+	let srtText = "";
+
+	for (let i = 0; i < sortedElements.length; i++) {
+		const element = sortedElements[i];
+		if (!element) continue;
+
+		const startSecs = mediaTimeToSeconds({ time: element.startTime });
+		const durationSecs = mediaTimeToSeconds({ time: element.duration });
+		const endSecs = startSecs + durationSecs;
+
+		const startTimeFormatted = formatTimeSRT({ seconds: startSecs });
+		const endTimeFormatted = formatTimeSRT({ seconds: endSecs });
+
+		const textContent = element.content || "";
+
+		srtText += `${i + 1}\n`;
+		srtText += `${startTimeFormatted} --> ${endTimeFormatted}\n`;
+		srtText += `${textContent}\n\n`;
+	}
+
+	return srtText.trim() + "\n";
 }

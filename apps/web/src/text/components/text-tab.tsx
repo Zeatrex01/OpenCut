@@ -2,6 +2,7 @@
 
 import { Textarea } from "@/components/ui/textarea";
 import { FontPicker } from "@/components/ui/font-picker";
+import { Slider } from "@/components/ui/slider";
 import type { TextElement } from "@/timeline";
 import { NumberField } from "@/components/ui/number-field";
 import { upsertElementKeyframe } from "@/animation/keyframes";
@@ -842,6 +843,49 @@ function clearPropertyAnimations({
 	};
 }
 
+function getTransitionParams(element: TextElement): { duration: number; intensity: number } {
+	const type = detectTransitionType(element);
+	const defaultDuration = 0.2;
+	if (type === "none" || type === "custom") {
+		return { duration: defaultDuration, intensity: 50 };
+	}
+
+	const animations = element.animations;
+	if (!animations) return { duration: defaultDuration, intensity: type === "pop" ? 1.15 : 50 };
+
+	if (type === "pop") {
+		const binding = animations.bindings["transform.scaleX"];
+		const component = binding?.components?.[0];
+		const channelId = component?.channelId;
+		const channel = channelId ? animations.channels[channelId] : null;
+		if (channel && channel.keys.length === 5) {
+			const k1 = channel.keys[1]; // Pop scale key
+			const k2 = channel.keys[2]; // Transition end key
+			const intensity = k1 && typeof k1.value === "number" ? k1.value : 1.15;
+			const duration = k2 ? mediaTimeToSeconds({ time: k2.time }) : defaultDuration;
+			return { duration, intensity };
+		}
+	}
+
+	if (type === "slide") {
+		const binding = animations.bindings["transform.positionY"];
+		const component = binding?.components?.[0];
+		const channelId = component?.channelId;
+		const channel = channelId ? animations.channels[channelId] : null;
+		if (channel && channel.keys.length === 4) {
+			const k0 = channel.keys[0]; // Slide start offset key (value)
+			const k1 = channel.keys[1]; // Slide end key (time)
+			const val0 = k0 && typeof k0.value === "number" ? k0.value : 0;
+			const val1 = k1 && typeof k1.value === "number" ? k1.value : 0;
+			const intensity = Math.abs(val0 - val1);
+			const duration = k1 ? mediaTimeToSeconds({ time: k1.time }) : defaultDuration;
+			return { duration, intensity };
+		}
+	}
+
+	return { duration: defaultDuration, intensity: type === "pop" ? 1.15 : 50 };
+}
+
 function TransitionsSection({
 	element,
 	trackId,
@@ -851,16 +895,36 @@ function TransitionsSection({
 }) {
 	const editor = useEditor();
 	const activeTransition = detectTransitionType(element);
+	const { duration, intensity } = getTransitionParams(element);
 
-	const applyTransitionPreset = (type: "none" | "pop" | "slide") => {
+	const applyTransitionPreset = (
+		type: "none" | "pop" | "slide",
+		customDuration?: number,
+		customIntensity?: number,
+	) => {
 		let nextAnimations = element.animations;
 
 		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.scaleX" });
 		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.scaleY" });
 		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.positionY" });
 
+		if (type === "none") {
+			editor.timeline.updateElements({
+				updates: [
+					{
+						trackId,
+						elementId: element.id,
+						patch: {
+							animations: nextAnimations,
+						},
+					},
+				],
+			});
+			return;
+		}
+
 		const durationSecs = mediaTimeToSeconds({ time: element.duration });
-		const transitionSecs = Math.min(0.3, durationSecs / 2);
+		const transitionSecs = Math.min(customDuration ?? 0.2, durationSecs / 2);
 
 		if (type === "pop") {
 			const times = [
@@ -870,7 +934,8 @@ function TransitionsSection({
 				mediaTimeFromSeconds({ seconds: durationSecs - transitionSecs }),
 				element.duration,
 			];
-			const values = [0, 1.2, 1.0, 1.0, 0];
+			const popScale = customIntensity ?? 1.15;
+			const values = [0, popScale, 1.0, 1.0, 0];
 
 			for (let i = 0; i < times.length; i++) {
 				nextAnimations = upsertElementKeyframe({
@@ -895,7 +960,9 @@ function TransitionsSection({
 				mediaTimeFromSeconds({ seconds: durationSecs - transitionSecs }),
 				element.duration,
 			];
-			const values = [50, 0, 0, 50];
+			const baseY = element.transform.position.y;
+			const slideOffset = customIntensity ?? 50;
+			const values = [baseY + slideOffset, baseY, baseY, baseY + slideOffset];
 
 			for (let i = 0; i < times.length; i++) {
 				nextAnimations = upsertElementKeyframe({
@@ -957,6 +1024,42 @@ function TransitionsSection({
 					<p className="text-xs text-muted-foreground mt-2">
 						Custom keyframe animation is applied. Selecting a preset will overwrite it.
 					</p>
+				)}
+
+				{(activeTransition === "pop" || activeTransition === "slide") && (
+					<div className="flex flex-col gap-3 mt-4 pt-3 border-t">
+						<div className="flex flex-col gap-1.5">
+							<div className="flex justify-between items-center text-xs">
+								<span className="text-muted-foreground">Duration</span>
+								<span className="font-mono">{duration.toFixed(2)}s</span>
+							</div>
+							<Slider
+								value={[duration]}
+								min={0.05}
+								max={0.80}
+								step={0.05}
+								onValueChange={([val]) => applyTransitionPreset(activeTransition, val, intensity)}
+							/>
+						</div>
+
+						<div className="flex flex-col gap-1.5">
+							<div className="flex justify-between items-center text-xs">
+								<span className="text-muted-foreground">
+									{activeTransition === "pop" ? "Pop Scale" : "Slide Distance"}
+								</span>
+								<span className="font-mono">
+									{activeTransition === "pop" ? `${intensity.toFixed(2)}x` : `${Math.round(intensity)}px`}
+								</span>
+							</div>
+							<Slider
+								value={[intensity]}
+								min={activeTransition === "pop" ? 1.05 : 10}
+								max={activeTransition === "pop" ? 1.50 : 150}
+								step={activeTransition === "pop" ? 0.01 : 5}
+								onValueChange={([val]) => applyTransitionPreset(activeTransition, duration, val)}
+							/>
+						</div>
+					</div>
 				)}
 			</SectionContent>
 		</Section>
