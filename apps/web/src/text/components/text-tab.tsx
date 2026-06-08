@@ -4,6 +4,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { FontPicker } from "@/components/ui/font-picker";
 import type { TextElement } from "@/timeline";
 import { NumberField } from "@/components/ui/number-field";
+import { upsertElementKeyframe } from "@/animation/keyframes";
+import { mediaTimeFromSeconds, mediaTimeToSeconds, ZERO_MEDIA_TIME } from "@/wasm";
+import type { ElementAnimations } from "@/animation/types";
 import { useRef } from "react";
 import {
 	Section,
@@ -57,6 +60,7 @@ export function TextTab({
 			<TypographySection element={element} trackId={trackId} />
 			<SpacingSection element={element} trackId={trackId} />
 			<BackgroundSection element={element} trackId={trackId} />
+			<TransitionsSection element={element} trackId={trackId} />
 		</div>
 	);
 }
@@ -761,6 +765,199 @@ function BackgroundSection({
 						/>
 					</SectionField>
 				</SectionFields>
+			</SectionContent>
+		</Section>
+	);
+}
+
+type TransitionType = "none" | "pop" | "slide" | "custom";
+
+function detectTransitionType(element: TextElement): TransitionType {
+	const animations = element.animations;
+	if (!animations) return "none";
+
+	const hasScaleX = !!animations.bindings["transform.scaleX"];
+	const hasScaleY = !!animations.bindings["transform.scaleY"];
+	const hasPositionY = !!animations.bindings["transform.positionY"];
+	const hasOtherBindings = Object.keys(animations.bindings).some(
+		(path) => path !== "transform.scaleX" && path !== "transform.scaleY" && path !== "transform.positionY"
+	);
+
+	if (hasOtherBindings) {
+		return "custom";
+	}
+
+	if (hasScaleX && hasScaleY && !hasPositionY) {
+		const channelIdX = animations.bindings["transform.scaleX"]?.components[0]?.channelId;
+		const channelX = channelIdX ? animations.channels[channelIdX] : null;
+		if (channelX && channelX.keys.length === 5) {
+			return "pop";
+		}
+		return "custom";
+	}
+
+	if (hasPositionY && !hasScaleX && !hasScaleY) {
+		const channelIdY = animations.bindings["transform.positionY"]?.components[0]?.channelId;
+		const channelY = channelIdY ? animations.channels[channelIdY] : null;
+		if (channelY && channelY.keys.length === 4) {
+			return "slide";
+		}
+		return "custom";
+	}
+
+	if (!hasScaleX && !hasScaleY && !hasPositionY) {
+		return "none";
+	}
+
+	return "custom";
+}
+
+function clearPropertyAnimations({
+	animations,
+	propertyPath,
+}: {
+	animations: ElementAnimations | undefined;
+	propertyPath: string;
+}): ElementAnimations | undefined {
+	if (!animations) return undefined;
+
+	const nextBindings = { ...animations.bindings };
+	const nextChannels = { ...animations.channels };
+
+	const binding = nextBindings[propertyPath];
+	if (binding) {
+		delete nextBindings[propertyPath];
+		for (const component of binding.components) {
+			delete nextChannels[component.channelId];
+		}
+	}
+
+	if (Object.keys(nextBindings).length === 0 || Object.keys(nextChannels).length === 0) {
+		return undefined;
+	}
+
+	return {
+		bindings: nextBindings,
+		channels: nextChannels,
+	};
+}
+
+function TransitionsSection({
+	element,
+	trackId,
+}: {
+	element: TextElement;
+	trackId: string;
+}) {
+	const editor = useEditor();
+	const activeTransition = detectTransitionType(element);
+
+	const applyTransitionPreset = (type: "none" | "pop" | "slide") => {
+		let nextAnimations = element.animations;
+
+		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.scaleX" });
+		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.scaleY" });
+		nextAnimations = clearPropertyAnimations({ animations: nextAnimations, propertyPath: "transform.positionY" });
+
+		const durationSecs = mediaTimeToSeconds({ time: element.duration });
+		const transitionSecs = Math.min(0.3, durationSecs / 2);
+
+		if (type === "pop") {
+			const times = [
+				ZERO_MEDIA_TIME,
+				mediaTimeFromSeconds({ seconds: transitionSecs / 2 }),
+				mediaTimeFromSeconds({ seconds: transitionSecs }),
+				mediaTimeFromSeconds({ seconds: durationSecs - transitionSecs }),
+				element.duration,
+			];
+			const values = [0, 1.2, 1.0, 1.0, 0];
+
+			for (let i = 0; i < times.length; i++) {
+				nextAnimations = upsertElementKeyframe({
+					animations: nextAnimations,
+					propertyPath: "transform.scaleX",
+					time: times[i],
+					value: values[i],
+					interpolation: "linear",
+				});
+				nextAnimations = upsertElementKeyframe({
+					animations: nextAnimations,
+					propertyPath: "transform.scaleY",
+					time: times[i],
+					value: values[i],
+					interpolation: "linear",
+				});
+			}
+		} else if (type === "slide") {
+			const times = [
+				ZERO_MEDIA_TIME,
+				mediaTimeFromSeconds({ seconds: transitionSecs }),
+				mediaTimeFromSeconds({ seconds: durationSecs - transitionSecs }),
+				element.duration,
+			];
+			const values = [50, 0, 0, 50];
+
+			for (let i = 0; i < times.length; i++) {
+				nextAnimations = upsertElementKeyframe({
+					animations: nextAnimations,
+					propertyPath: "transform.positionY",
+					time: times[i],
+					value: values[i],
+					interpolation: "linear",
+				});
+			}
+		}
+
+		editor.timeline.updateElements({
+			updates: [
+				{
+					trackId,
+					elementId: element.id,
+					patch: {
+						animations: nextAnimations,
+					},
+				},
+			],
+		});
+	};
+
+	return (
+		<Section collapsible sectionKey={`${element.id}:transitions`}>
+			<SectionHeader>
+				<SectionTitle>Transitions</SectionTitle>
+			</SectionHeader>
+			<SectionContent>
+				<div className="flex gap-2">
+					<Button
+						variant={activeTransition === "none" ? "secondary" : "outline"}
+						size="sm"
+						className="flex-1"
+						onClick={() => applyTransitionPreset("none")}
+					>
+						None
+					</Button>
+					<Button
+						variant={activeTransition === "pop" ? "secondary" : "outline"}
+						size="sm"
+						className="flex-1"
+						onClick={() => applyTransitionPreset("pop")}
+					>
+						Pop Up
+					</Button>
+					<Button
+						variant={activeTransition === "slide" ? "secondary" : "outline"}
+						size="sm"
+						className="flex-1"
+						onClick={() => applyTransitionPreset("slide")}
+					>
+						Slide
+					</Button>
+				</div>
+				{activeTransition === "custom" && (
+					<p className="text-xs text-muted-foreground mt-2">
+						Custom keyframe animation is applied. Selecting a preset will overwrite it.
+					</p>
+				)}
 			</SectionContent>
 		</Section>
 	);
